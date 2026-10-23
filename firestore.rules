@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Players, candidates and draft settings: anyone with the link can read and edit.
+    match /{col}/{id} {
+      allow read: if col in ['participants', 'candidates', 'picks', 'drafts'];
+      allow create, update: if col in ['participants', 'candidates', 'drafts']
+                            && request.resource.data.size() <= 20;
+      allow delete: if col in ['participants', 'candidates', 'picks', 'drafts'];
+    }
+    // A pick can be made once and never overwritten (undo deletes it).
+    match /picks/{id} {
+      allow create: if request.resource.data.keys().hasAll(['party', 'n', 'participantId', 'candidateId'])
+                    && request.resource.data.size() <= 10;
+    }
+  }
+}
