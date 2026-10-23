@@ -184,20 +184,55 @@ table.score{border-collapse:collapse;width:100%;font-size:13px;min-width:860px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--surface);padding:10px 16px;border-radius:8px;font-size:13.5px;max-width:calc(100% - 32px);z-index:20}
 .loading{color:var(--muted);padding:40px 0;text-align:center}
 @media (prefers-reduced-motion:no-preference){.board td.cur{transition:background .2s}}
+
+/* landing gate */
+.gate{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding-block:32px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));box-sizing:border-box;
+  background:linear-gradient(135deg,var(--dem-soft) 0%,var(--paper) 45%,var(--paper) 55%,var(--rep-soft) 100%)}
+.gate-card{width:100%;max-width:460px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:28px 28px 22px;box-sizing:border-box;position:relative;overflow:hidden}
+.gate-stripes{position:absolute;inset:0 0 auto;display:flex;height:6px}
+.gate-stripes span{flex:1;background:var(--dem)} .gate-stripes span+span{background:var(--rep)}
+.gate-eyebrow{margin:6px 0 10px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.gate h1{font-family:var(--display);font-weight:800;font-size:clamp(36px,9vw,54px);line-height:.92;margin:0;text-transform:uppercase;text-wrap:balance}
+.gate h1 span{color:var(--dem)} .gate h1 span+span{color:var(--rep)}
+.gate-lede{color:var(--muted);margin:14px 0 20px;max-width:40ch}
+.gate-form label{display:block;font-weight:600;font-size:13px;margin-bottom:6px}
+.gate-form input{font-size:16px}
+.gate-err{color:var(--rep);font-size:13.5px;margin:8px 0 0}
+.gate .note{margin-top:18px}
 </style>
 </head>
 <body>
 
+<section id="gate" class="gate" aria-labelledby="gate-title">
+  <div class="gate-card">
+    <div class="gate-stripes" aria-hidden="true"><span></span><span></span></div>
+    <p class="gate-eyebrow">Private league · Invitation only</p>
+    <h1 id="gate-title"><span>2028</span> Nomination <span>Draft</span></h1>
+    <p class="gate-lede">Two snake drafts for the Democratic and Republican nominations, scored from the first contest to the convention. Enter the league password to come in.</p>
+    <form id="gate-form" class="gate-form" autocomplete="off">
+      <label for="gate-pw">League password</label>
+      <div class="row">
+        <input id="gate-pw" type="password" autocomplete="current-password" placeholder="Password" required>
+        <button class="btn primary" type="submit" id="gate-btn">Enter</button>
+      </div>
+      <p class="gate-err" id="gate-err" role="alert" hidden></p>
+    </form>
+    <p class="note">Ask the commissioner if you need the password. Once you’re in, this device stays signed in until you lock it.</p>
+  </div>
+</section>
 
+<div id="app" hidden>
 <div class="mast">
   <div class="wrap">
     <div class="brand">
       <h1><span>2028</span> Nomination <span>Draft</span></h1>
       <p>Two snake drafts, one for each party. Picks sync live for everyone on this page.</p>
     </div>
-    <label class="whoami" for="me-select">You are
+    <div class="whoami">
+      <label for="me-select">You are</label>
       <select id="me-select"><option value="">Spectator</option></select>
-    </label>
+      <button class="btn sm" type="button" id="signout" title="Sign this device out of the league">Lock site</button>
+    </div>
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" data-view="dem">Democratic draft</button>
       <button class="tab" role="tab" data-view="rep">Republican draft</button>
@@ -360,10 +395,12 @@ table.score{border-collapse:collapse;width:100%;font-size:13px;min-width:860px}
     </section>
   </main>
 </div>
+</div>
 <div class="toast" id="toast" hidden></div>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script>
 (function(){
@@ -374,18 +411,11 @@ const DEFAULT_ROUNDS = 5;
 const tabId = Math.random().toString(36).slice(2);
 
 const S = {participants:[], candidates:[], picks:[], drafts:{}, loaded:new Set()};
-let db = null, fs = null, readOnly = false;
-// First visit to an empty database loads the players, settings and candidate pool from seed.json.
-async function seedIfEmpty(){
-  try{
-    const [c,p]=await Promise.all([fs.collection("candidates").limit(1).get(),fs.collection("participants").limit(1).get()]);
-    if(!c.empty||!p.empty)return;
-    const seed=await (await fetch("seed.json",{cache:"no-store"})).json();
-    const batch=fs.batch();
-    for(const col of Object.keys(seed))for(const id of Object.keys(seed[col]))batch.set(fs.collection(col).doc(id),seed[col][id]);
-    await batch.commit();
-  }catch(e){console.error("seed",e)}
-}
+// The league password signs every visitor in to one shared Firebase account;
+// the Firestore rules only serve data to that account.
+const LEAGUE_EMAIL = "players@draft2028-e569a.firebaseapp.com";
+const LEAGUE_HASH = "e37d0ef4a6b7e336288f0f3f3880ca87d03e00f77499c448d7ddf608ceec3097";
+let db = null, fs = null, auth = null, started = false, readOnly = false;
 let view = lsGet("view") || "dem";
 let me = lsGet("me") || "";
 let admin = ssGet("admin") === "1";
@@ -905,17 +935,54 @@ setView(["dem","rep","standings","scoring"].includes(view)?view:"dem");
 (async()=>{
   const cfg=window.FIREBASE_CONFIG;
   if(!cfg||!window.firebase){showBanner();render();return}
-  try{firebase.initializeApp(cfg);fs=firebase.firestore();}catch(e){console.error(e);showBanner();render();return}
+  try{firebase.initializeApp(cfg);fs=firebase.firestore();auth=firebase.auth();}catch(e){console.error(e);showBanner();render();return}
   // Thin wrapper so the app code reads like the original: update() merges nested maps.
   const wrap=r=>({raw:r,id:r.id,get:()=>r.get(),set:d=>r.set(d),update:d=>r.set(d,{merge:true}),delete:()=>r.delete()});
   db={doc:p=>wrap(fs.doc(p)),collection:c=>{const col=fs.collection(c);return {doc:id=>wrap(id?col.doc(id):col.doc()),where:(...a)=>col.where(...a),onSnapshot:(...a)=>col.onSnapshot(...a)}}};
+  // A device that has signed in before goes straight to the draft.
+  auth.onAuthStateChanged(u=>{if(u&&u.email===LEAGUE_EMAIL)enterApp();else showGate()});
+})();
+
+function showGate(){
+  if(started)return;
+  $("gate").hidden=false;$("app").hidden=true;
+  setTimeout(()=>{try{$("gate-pw").focus()}catch(e){}},50);
+}
+function enterApp(){
+  if(started)return;
+  started=true;
+  $("gate").hidden=true;$("app").hidden=false;
   showBanner();
-  await seedIfEmpty();
   sub("participants","p",a=>S.participants=a.filter(p=>p.name));
   sub("candidates","c",a=>S.candidates=a.filter(x=>x.name&&(x.party==="dem"||x.party==="rep")));
   sub("picks","k",a=>S.picks=a.filter(k=>typeof k.n==="number"));
   sub("drafts","d",a=>{S.drafts={};a.forEach(d=>S.drafts[d.id]=d)});
-})();
+}
+function gateError(msg){const e=$("gate-err");e.textContent=msg;e.hidden=!msg}
+$("gate-form").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const pw=$("gate-pw").value;
+  gateError("");
+  let h="";try{h=await sha256(pw)}catch(err){}
+  if(h!==LEAGUE_HASH){gateError("That password isn't right. Check with the commissioner.");$("gate-pw").select();return}
+  if(!auth){gateError("The draft database couldn't load. Check your connection and reload the page.");return}
+  const btn=$("gate-btn");btn.disabled=true;btn.textContent="Entering…";
+  try{
+    await auth.signInWithEmailAndPassword(LEAGUE_EMAIL,pw);
+    $("gate-pw").value="";
+  }catch(err){
+    console.error(err);
+    const c=err&&err.code||"";
+    if(c==="auth/network-request-failed")gateError("Couldn't reach the server. Check your connection and try again.");
+    else if(c==="auth/too-many-requests")gateError("Too many attempts. Wait a minute and try again.");
+    else gateError("Sign-in isn't set up yet. Ask the commissioner to finish the Firebase sign-in setup.");
+  }finally{btn.disabled=false;btn.textContent="Enter"}
+});
+$("signout").addEventListener("click",async()=>{
+  try{await auth.signOut()}catch(e){}
+  try{sessionStorage.clear()}catch(e){}
+  location.reload();
+});
 })();
 </script>
 </body>
